@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -372,4 +373,120 @@ func lexIdentifier(src string, ic cursor) (*tok, cursor, bool) {
 		loc:   ic.loc,
 		tt:    identifierType,
 	}, cur, true
+}
+
+type AST struct {
+	Statements []*Statement
+}
+
+type ASTType uint
+
+const (
+	SelectType ASTType = iota
+	CreateTableType
+	InsertType
+)
+
+type Statement struct {
+	SelectStatement      *SelectStatement
+	CreateTableStatement *CreateTableStatement
+	InsertStatement      *InsertStatement
+	tt                   ASTType
+}
+
+type expressionType uint
+
+const (
+	literalType expressionType = iota
+)
+
+type expression struct {
+	lit *tok
+	tt  expressionType
+}
+
+type columnDefinition struct {
+	name     tok
+	datatype tok
+}
+
+type CreateTableStatement struct {
+	name tok
+	cols *[]*columnDefinition
+}
+
+type SelectStatement struct {
+	item []*expression
+	from tok
+}
+
+type InsertStatement struct {
+	table  tok
+	values *[]*expression
+}
+
+func tokenFromKeyword(k keyword) tok {
+	return tok{
+		tt:    keywordType,
+		value: string(k),
+	}
+}
+
+func tokenFromPunct(s punct) tok {
+	return tok{
+		tt:    symbolType,
+		value: string(s),
+	}
+}
+
+func expectToken(tokens []*tok, cursor uint, t tok) bool {
+	if cursor >= uint(len(tokens)) {
+		return false
+	}
+
+	return t.eq(tokens[cursor])
+}
+
+func helpMessage(tokens []*tok, cursor uint, msg string) {
+	var c *tok
+	if cursor < uint(len(tokens)) {
+		c = tokens[cursor]
+	} else {
+		c = tokens[cursor-1]
+	}
+
+	fmt.Printf("[%d,%d]: %s, got: %s\n", c.loc.line, c.loc.column, msg, c.value)
+}
+
+func Parse(src string) (*AST, error) {
+	tokens, err := tokenize(src)
+	if err != nil {
+		return nil, err
+	}
+
+	a := AST{}
+	cursor := uint(0)
+	for cursor < uint(len(tokens)) {
+		stmt, newCursor, ok := parseStatement(tokens, cursor, tokenFromPunct(semicolonPunct))
+		if !ok {
+			helpMessage(tokens, cursor, "Expected statement")
+			return nil, errors.New("Failed to parse, expected statement")
+		}
+		cursor = newCursor
+
+		a.Statements = append(a.Statements, stmt)
+
+		atLeastOneSemicolon := false
+		for expectToken(tokens, cursor, tokenFromPunct(semicolonPunct)) {
+			cursor++
+			atLeastOneSemicolon = true
+		}
+
+		if !atLeastOneSemicolon {
+			helpMessage(tokens, cursor, "Expected semi-colon delimiter between statements")
+			return nil, errors.New("Missing semi-colon between statements")
+		}
+	}
+
+	return &a, nil
 }
