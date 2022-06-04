@@ -1,13 +1,17 @@
 package parser
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type keyword string
 type punct string
 type tokenType uint
 
 const (
-	selectKey     keyword = "select"
+	selectKeyword keyword = "select"
+	whereKeyword  keyword = "where"
 	fromKeyword   keyword = "from"
 	asKeyword     keyword = "as"
 	tableKeyword  keyword = "table"
@@ -18,11 +22,11 @@ const (
 	intKeyword    keyword = "int"
 	textKeyword   keyword = "text"
 
-	semicolonPunctg  punct = ";"
-	asteriskPunctg   punct = "*"
-	commaPunctg      punct = ","
-	leftparenPunctg  punct = "("
-	rightparenPunctg punct = ")"
+	semicolonPunct  punct = ";"
+	asteriskPunct   punct = "*"
+	commaPunct      punct = ","
+	leftparenPunct  punct = "("
+	rightparenPunct punct = ")"
 
 	keywordType tokenType = iota
 	symbolType
@@ -198,4 +202,174 @@ func lexCharacterDelimited(src string, ic cursor, delimiter byte) (
 
 func lexString(src string, ic cursor) (*tok, cursor, bool) {
 	return lexCharacterDelimited(src, ic, '\'')
+}
+
+func lexSymbol(src string, ic cursor) (*tok, cursor, bool) {
+	c := src[ic.ptr]
+	cur := ic
+	// Will get overwritten later if not an ignored syntax
+	cur.ptr++
+	cur.loc.column++
+
+	switch c {
+	// Syntax that should be thrown away
+	case '\n':
+		cur.loc.line++
+		cur.loc.column = 0
+		fallthrough
+	case '\t':
+		fallthrough
+	case ' ':
+		return nil, cur, true
+	}
+
+	// Syntax that should be kept
+	symbols := []punct{
+		commaPunct,
+		leftparenPunct,
+		rightparenPunct,
+		semicolonPunct,
+		asteriskPunct,
+	}
+
+	var options []string
+	for _, s := range symbols {
+		options = append(options, string(s))
+	}
+
+	// Use `ic`, not `cur`
+	match := longestMatch(src, ic, options)
+	// Unknown character
+	if match == "" {
+		return nil, ic, false
+	}
+
+	cur.ptr = ic.ptr + uint(len(match))
+	cur.loc.column = ic.loc.column + uint(len(match))
+
+	return &tok{
+		value: match,
+		loc:   ic.loc,
+		tt:    symbolType,
+	}, cur, true
+}
+
+func lexKeyword(source string, ic cursor) (*tok, cursor, bool) {
+	cur := ic
+	keywords := []keyword{
+		selectKeyword,
+		insertKeyword,
+		valuesKeyword,
+		tableKeyword,
+		createKeyword,
+		whereKeyword,
+		fromKeyword,
+		intoKeyword,
+		textKeyword,
+	}
+
+	var options []string
+	for _, k := range keywords {
+		options = append(options, string(k))
+	}
+
+	match := longestMatch(source, ic, options)
+	if match == "" {
+		return nil, ic, false
+	}
+
+	cur.ptr = ic.ptr + uint(len(match))
+	cur.loc.column = ic.loc.column + uint(len(match))
+
+	return &tok{
+		value: match,
+		tt:    keywordType,
+		loc:   ic.loc,
+	}, cur, true
+}
+
+func longestMatch(src string, ic cursor, options []string) string {
+	var value []byte
+	var skipList []int
+	var match string
+
+	cur := ic
+
+	for cur.ptr < uint(len(src)) {
+		value = append(value, strings.ToLower(string(src[cur.ptr]))...)
+		cur.ptr++
+
+	match:
+		for i, option := range options {
+			for _, skip := range skipList {
+				if i == skip {
+					continue match
+				}
+			}
+
+			if option == string(value) {
+				skipList = append(skipList, i)
+				if len(option) > len(match) {
+					match = option
+				}
+
+				continue
+			}
+
+			sharesPrefix := string(value) == option[:cur.ptr-ic.ptr]
+			tooLong := len(value) > len(option)
+			if tooLong || !sharesPrefix {
+				skipList = append(skipList, i)
+			}
+		}
+
+		if len(skipList) == len(options) {
+			break
+		}
+	}
+
+	return match
+}
+
+func lexIdentifier(src string, ic cursor) (*tok, cursor, bool) {
+	if token, newCursor, ok := lexCharacterDelimited(src, ic, '"'); ok {
+		return token, newCursor, true
+	}
+
+	cur := ic
+
+	c := src[cur.ptr]
+	isAlphabetical := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	if !isAlphabetical {
+		return nil, ic, false
+	}
+	cur.ptr++
+	cur.loc.column++
+
+	value := []byte{c}
+	for ; cur.ptr < uint(len(src)); cur.ptr++ {
+		c = src[cur.ptr]
+
+		// Other characters count too, big ignoring non-ascii for now
+		isAlphabetical := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+		isNumeric := c >= '0' && c <= '9'
+		if isAlphabetical || isNumeric || c == '$' || c == '_' {
+			value = append(value, c)
+			cur.loc.column++
+			continue
+		}
+
+		break
+	}
+
+	if len(value) == 0 {
+		return nil, ic, false
+	}
+
+	return &tok{
+		// Unquoted dentifiers are case-insensitive
+		value: strings.ToLower(string(value)),
+		loc:   ic.loc,
+		tt:    identifierType,
+	}, cur, true
 }
